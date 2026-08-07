@@ -11,6 +11,22 @@ a working environment and run inference on our hardware.
 Go to [`SETUP.md`](./SETUP.md). It has the minimal, working install path only —
 no debugging history, no dead ends.
 
+## What's here
+
+```
+.
+├── SETUP.md                 # ← Start here: install instructions only
+├── docs/
+│   ├── DEPLOYMENT_LOG.md    # All issues hit and their fixes
+│   └── BENCHMARKS.md        # Inference timing on test clips
+└── env/
+    ├── constraints.txt      # Pinned dependency versions
+    ├── activate_env_vars.sh # Conda env variables (persistent)
+    └── deactivate_env_vars.sh
+└── scripts/
+    └── run_inference.sh     # Thin wrapper to run JoyGen
+```
+
 ## If you want to reproduce the exact debugging process
 
 See [`docs/DEPLOYMENT_LOG.md`](./docs/DEPLOYMENT_LOG.md) for every issue hit during
