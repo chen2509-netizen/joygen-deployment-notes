@@ -107,7 +107,7 @@ JoyGen（含 audio2motion）原生只支援兩件事：
 
 模型層級的風險:
 
-1. **不知道 VAEModel 是否依賴長距離上下文**——如果是 attention-based 或雙向架構，直接切段餵可能在每段開頭/結尾出現表情不連續；如果主要靠局部音框，切段影響可能很小。現有程式碼沒有調用任何分段邏輯，代表這件事**沒有被驗證過**，不能假設可行、也不能假設不可行，必須本地測（測法見 `buffering_implementation.md` 測試 C）。
+1. **不知道 VAEModel 是否依賴長距離上下文**——如果是 attention-based 或雙向架構，直接切段餵可能在每段開頭/結尾出現表情不連續；如果主要靠局部音框，切段影響可能很小。現有程式碼沒有調用任何分段邏輯，代表這件事**沒有被驗證過**，不能假設可行、也不能假設不可行，必須本地測。
 2. `save_wav16k()` 用「寫檔 → ffmpeg 轉檔 → 讀回」，就算輸入分塊了，這個 I/O pattern 本身也會拖慢延遲，需要換成純記憶體 resample。
 
 > 系統整合層級的風險（TTS 是否支援 streaming、三段管線的檔案交接方式）另列在下方「前置條件」小節與第五節第 6 點。
@@ -154,7 +154,7 @@ JoyGen（含 audio2motion）原生只支援兩件事：
 建議先做風險低、能立刻拿到數據的輸出端，再做風險較高的輸入端：
 
 1. **[先做] 輸出端 frame-based streaming 實作與時間量測**（對應第二節）：把 `joygen_stream.py` 跑起來，記錄逐 frame 時間成本，並跟原本「整段跑完才輸出」的 baseline 比較差異。這一步不依賴輸入端是否已經 streaming 化（見第二節「本地測試該用哪種輸入」）。
-2. **[次做] 輸入端 audio2motion chunked inference 實測**（對應第三節）：驗證 VAEModel 對整段音訊 vs 切段音訊輸出的 exp 係數差異大小，決定 sliding window 方案能不能用、window 要多大、要不要 overlap。測法見 `buffering_implementation.md` 測試 C。
+2. **[次做] 輸入端 audio2motion chunked inference 實測**（對應第三節）：驗證 VAEModel 對整段音訊 vs 切段音訊輸出的 exp 係數差異大小，決定 sliding window 方案能不能用、window 要多大、要不要 overlap。
 3. **[待確認]** 讀 `inference_edit_expression.py` 原始碼，確認它能不能被改成逐 frame 即時輸出，還是天生要看到整段 exp 係數才能跑——目前完全未知，是這份研究最大的資訊缺口。
 4. **[待設計]** frame 與 audio 之間的 timestamp 同步機制——輸出端一旦邊算邊送，畫面跟音訊各自走不同的 UDP/pipe，需要一致的時間基準，ffmpeg 不會自動處理。
 5. **[待對齊]** 確認「UDP/MPEG-TS bytes → 瀏覽器可播放格式」中間要接什麼元件（WebRTC gateway？MSE + websocket relay？），屬於 architecture doc 的 Media Server 範疇，JoyGen 端修改到「產生可串流的 bytes」為止，要在 Task 3 跟其他成員對齊介面。
@@ -164,7 +164,7 @@ JoyGen（含 audio2motion）原生只支援兩件事：
 
 ## 六、對應要新增的檔案（放在 `ourproject/script/`，不動原始碼）
 
-這裡先列出對應關係，僅供快速對照；詳細修改內容與測試步驟在 `buffering_implementation.md` 說明。
+這裡先列出對應關係，僅供快速對照。
 
 - `ourproject/script/joygen_stream.py` — 複製自 `inference_joygen.py`，套用第二節解法。可以先做。
 - `ourproject/script/audio2motion_stream.py` — 複製自 `inference_audio2motion.py`，套用第三節解法。等第五節第 2 點實測結果出來再動工。
