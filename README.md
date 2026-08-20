@@ -6,7 +6,29 @@ This repo does **not** contain JoyGen's source code. It documents how to reprodu
 
 ## If you just want to run the model
 
-Go to [`SETUP.md`](./SETUP.md). It has the minimal, working install path only — no debugging history, no dead ends.
+### 1. Prerequisites
+
+- NVIDIA driver installed (`nvidia-smi` works)
+- Miniconda, `git`
+- Ubuntu 20.04 or 22.04
+
+### 2. Download the pretrained weights (~5GB)
+
+Download in a browser: https://drive.google.com/file/d/1kvGsljFRnXKUK_ETdd49jJy8DbdgZKkE
+
+### 3. Run the installer
+
+```bash
+git clone https://github.com/chen2509-netizen/joygen-deployment-notes.git
+cd joygen-deployment-notes
+./scripts/setup.sh --weights /path/to/pretrained_models.tar.gz
+```
+
+Automates the whole of [`SETUP.md`](./SETUP.md): conda env, CUDA toolkit, PyTorch, JoyGen, nvdiffrast, weights, then a 5s smoke test. Idempotent — on failure, fix the cause and re-run the same command; finished steps are skipped. Full output goes to `setup.log`.
+
+`--dry-run` prints the detected GPU and the install plan without changing anything. Other flags: `--profile cu117|cu118`, `--env-name`, `--projects-dir`, `--skip-weights`, `--skip-smoke-test`.
+
+> **Status:** the install flow is the one verified on RTX 3060 / Ubuntu 20.04 and recorded in [`SETUP.md`](./SETUP.md), but `setup.sh` itself has not yet been run end-to-end. CUDA 11.8 for sm_89 (RTX 4090) and the `gcc-9` fallback on Ubuntu 22.04 are inferred, not tested. If it fails, [`SETUP.md`](./SETUP.md) has the manual steps.
 
 ## What's here
 
