@@ -1,0 +1,13 @@
+# Logs
+*.log
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments & OS files
+.venv/
+env/
+.DS_Store
+Thumbs.db
