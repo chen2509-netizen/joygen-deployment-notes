@@ -142,7 +142,11 @@ def main(args):
     # ------------------------------------------------------------- sink 準備
     # 主要路徑：常駐 ffmpeg，frame 一產生就編碼送出
     ffmpeg_sink = FFmpegSink(width=frame_w, height=frame_h, fps=fps,
-                             target=args.target, verbose=args.verbose)
+                             target=args.target,
+                             preset=args.preset, tune=args.tune,
+                             bitrate=args.bitrate, gop=args.gop,
+                             pkt_size=args.pkt_size, sdp_path=args.sdp_file,
+                             verbose=args.verbose)
 
     # debug 路徑：預設關閉。開啟才寫 PNG（供 diff_frames 驗證正確性用），
     # 但寫檔是阻塞 I/O，會拖慢主迴圈、污染計時，所以正式量測時不要開。
@@ -213,6 +217,11 @@ def main(args):
         "img_size": args.img_size,
         "stream_frame_size": f"{frame_w}x{frame_h}",
         "target": args.target,
+        "preset": args.preset,
+        "tune": args.tune,
+        "bitrate": args.bitrate,
+        "gop": args.gop,
+        "pkt_size": args.pkt_size,
         "debug_png": bool(args.debug),
         "first_frame_after_gen_start_ms": round(first_frame_ms or 0, 1),
         "gpu_id": args.gpu_id,
@@ -236,8 +245,20 @@ def build_parser():
     p.add_argument("--fps", type=int, default=25)
     p.add_argument("--batch_size", type=int, default=8)
     p.add_argument("--report", type=str, default="./timing/step3")
-    p.add_argument("--target", type=str, default="udp://127.0.0.1:23000",
-                   help="ffmpeg 輸出目標：udp://host:port 走 MPEG-TS，或給檔案路徑存成 mp4")
+    p.add_argument("--target", type=str, default="rtp://127.0.0.1:23000",
+                   help="rtp://host:port | udp://host:port | file path")
+    p.add_argument("--preset", type=str, default="ultrafast")
+    p.add_argument("--tune", type=str, default="zerolatency")
+    p.add_argument("--bitrate", type=str, default=None,
+                   help="cap encoder bitrate, e.g. 4M; keeps keyframes small enough "
+                        "for the receiver's socket buffer")
+    p.add_argument("--gop", type=int, default=None,
+                   help="keyframe interval in frames; lower means a receiver can "
+                        "start decoding sooner")
+    p.add_argument("--pkt_size", type=int, default=1200,
+                   help="RTP payload size, should stay under the path MTU")
+    p.add_argument("--sdp_file", type=str, default="stream.sdp",
+                   help="where to write the SDP the RTP receiver needs")
     p.add_argument("--debug", action="store_true",
                    help="同時寫 PNG 供 diff 驗證（會拖慢，正式計時勿開）")
     p.add_argument("--verbose", action="store_true")

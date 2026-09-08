@@ -12,13 +12,14 @@
 #   (step2 已被 step3 取代：joygen_stream.py 從 Step 2 一路演進到 Step 3，
 #    Step 2 的「只寫 PNG」行為現在等同 step3 + 檔案 target，不再單獨提供 mode)
 #
-#   step3 <audio> <video> <intermediate_dir> [target] [--debug]
-#       frame 即時送進常駐 ffmpeg。target 預設 udp://127.0.0.1:23000，
-#       也可以給檔案路徑（例如 results/stream_step3/out.mp4）直接存檔。
-#       加 --debug 會同時寫 PNG 供 diff 驗證（會拖慢，正式計時勿開）。
+#   step3 <audio> <video> <intermediate_dir> [target] [extra flags...]
+#       frame 即時送進常駐 ffmpeg。target 預設 rtp://127.0.0.1:23000，
+#       也可以給 udp://host:port 或檔案路徑（例如 out.mp4）。
+#       其餘旗標原樣傳給 Python：--debug、--bitrate 4M、--gop 25 等。
 #
-#   recv [port]
-#       開 ffplay 監聽 UDP，跑 step3 之前要先開這個
+#   recv [stream.sdp | udp://host:port]
+#       RTP：先啟動 sender 產生 SDP，再跑這個
+#       UDP：先跑這個再啟動 sender
 #
 #   diff <baseline_frames_dir> <stepN_frames_dir> [tol]
 #       逐張 PNG 比對，驗證輸出跟 baseline 一致
@@ -31,8 +32,8 @@ usage: bash scripts/run.sh <mode> <args...>
 
 modes:
   baseline <audio> <video> <intermediate_dir> [result_dir]
-  step3    <audio> <video> <intermediate_dir> [target] [--debug]
-  recv     [port]
+  step3    <audio> <video> <intermediate_dir> [target] [--debug|--bitrate M|--gop N]
+  recv     [stream.sdp | udp://host:port]
   diff     <baseline_frames_dir> <stepN_frames_dir> [tol]
 EOF
     exit 1
@@ -66,30 +67,50 @@ case "$MODE" in
     step3)
         [ $# -lt 3 ] && usage
         AUDIO="$1"; VIDEO="$2"; INTER="$3"; shift 3
-        TARGET="udp://127.0.0.1:23000"
-        DEBUG=""
-        # 第 4 個位置參數若不是 --debug 就當成 target
-        if [ $# -ge 1 ] && [ "$1" != "--debug" ]; then TARGET="$1"; shift; fi
-        if [ "${1:-}" = "--debug" ]; then DEBUG="--debug"; fi
+        TARGET="rtp://127.0.0.1:23000"
+        EXTRA=()
+        if [ $# -ge 1 ] && [[ "$1" != --* ]]; then TARGET="$1"; shift; fi
+        # remaining args pass straight through (--debug, --bitrate 4M, --gop 25, ...)
+        EXTRA=("$@")
 
         TAG="$(basename "${AUDIO%.*}")_$(date +%m%d_%H%M)"
         echo "[run] target = $TARGET"
-        [ -n "$DEBUG" ] && echo "[run] debug PNG 已開啟（會影響計時）"
 
         python -u -m streaming.joygen_stream \
             --audio_path "$AUDIO" --video_path "$VIDEO" --intermediate_dir "$INTER" \
             "${COMMON_MODEL_ARGS[@]}" \
             --result_dir "results/stream_step3" \
             --report "timing/step3_${TAG}" \
-            --target "$TARGET" $DEBUG
+            --target "$TARGET" "${EXTRA[@]}"
         ;;
 
     recv)
-        PORT="${1:-23000}"
-        echo "[run] 監聽 udp://127.0.0.1:${PORT}，請在另一個終端機跑 step3"
-        echo "[run] 注意：一定要先開這個，再啟動 step3，否則會錯過開頭"
-        ffplay -fflags nobuffer -flags low_delay -framedrop \
-               -i "udp://127.0.0.1:${PORT}"
+        # RTP needs the SDP the sender writes at startup; UDP/MPEG-TS does not.
+        SRC="${1:-stream.sdp}"
+        if [[ "$SRC" == udp://* ]]; then
+            echo "[run] listening on $SRC (start this before the sender)"
+            ffplay -f mpegts -probesize 5000000 -analyzeduration 5000000 \
+                   -fflags nobuffer -flags low_delay -framedrop \
+                   -i "${SRC}?fifo_size=1000000&overrun_nonfatal=1"
+        else
+            if [ ! -f "$SRC" ]; then
+                echo "[run] $SRC not found."
+                echo "[run] Start the sender first — it writes the SDP on startup,"
+                echo "[run] and spends ~18s preprocessing before any frame goes out,"
+                echo "[run] which is plenty of time to start this receiver."
+                exit 1
+            fi
+            echo "[run] playing $SRC (loop mode, Ctrl-C to stop)"
+            while true; do
+                ffplay -protocol_whitelist file,rtp,udp \
+                       -reorder_queue_size 2000 \
+                       -buffer_size 20000000 \
+                       -max_delay 500000 \
+                       -i "$SRC" 2>&1 | grep -v "non-existing PPS\|decode_slice_header"
+                echo "[run] stream ended, waiting for next run..."
+                sleep 1
+            done
+        fi
         ;;
 
     diff)
