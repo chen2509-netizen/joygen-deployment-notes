@@ -85,19 +85,20 @@ case "$MODE" in
         ;;
 
     recv)
-        # RTP needs the SDP the sender writes at startup; UDP/MPEG-TS does not.
         SRC="${1:-stream.sdp}"
-        if [[ "$SRC" == udp://* ]]; then
+        if [[ "$SRC" == udp://* || "$SRC" == rtp://* ]]; then
+            # MPEG-TS (over UDP, or over RTP when audio is muxed in): no SDP needed
             echo "[run] listening on $SRC (start this before the sender)"
-            ffplay -f mpegts -probesize 5000000 -analyzeduration 5000000 \
-                   -fflags nobuffer -flags low_delay -framedrop \
-                   -i "${SRC}?fifo_size=1000000&overrun_nonfatal=1"
+            ffplay -probesize 5000000 -analyzeduration 5000000 \
+                   -reorder_queue_size 2000 \
+                   -buffer_size 20000000 \
+                   -max_delay 500000 \
+                   -i "$SRC"
         else
             if [ ! -f "$SRC" ]; then
                 echo "[run] $SRC not found."
                 echo "[run] Start the sender first — it writes the SDP on startup,"
-                echo "[run] and spends ~18s preprocessing before any frame goes out,"
-                echo "[run] which is plenty of time to start this receiver."
+                echo "[run] and spends ~18s preprocessing before any frame goes out."
                 exit 1
             fi
             echo "[run] playing $SRC (loop mode, Ctrl-C to stop)"

@@ -146,6 +146,7 @@ def main(args):
                              preset=args.preset, tune=args.tune,
                              bitrate=args.bitrate, gop=args.gop,
                              pkt_size=args.pkt_size, sdp_path=args.sdp_file,
+                             audio_path=None if args.no_audio else args.audio_path,
                              verbose=args.verbose)
 
     # debug 路徑：預設關閉。開啟才寫 PNG（供 diff_frames 驗證正確性用），
@@ -222,6 +223,7 @@ def main(args):
         "bitrate": args.bitrate,
         "gop": args.gop,
         "pkt_size": args.pkt_size,
+        "audio_muxed": not args.no_audio,
         "debug_png": bool(args.debug),
         "first_frame_after_gen_start_ms": round(first_frame_ms or 0, 1),
         "gpu_id": args.gpu_id,
@@ -259,6 +261,8 @@ def build_parser():
                    help="RTP payload size, should stay under the path MTU")
     p.add_argument("--sdp_file", type=str, default="stream.sdp",
                    help="where to write the SDP the RTP receiver needs")
+    p.add_argument("--no_audio", action="store_true",
+                   help="video only; by default the source audio is muxed in")
     p.add_argument("--debug", action="store_true",
                    help="同時寫 PNG 供 diff 驗證（會拖慢，正式計時勿開）")
     p.add_argument("--verbose", action="store_true")
