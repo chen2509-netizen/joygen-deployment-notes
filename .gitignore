@@ -11,3 +11,6 @@ __pycache__/
 env/
 .DS_Store
 Thumbs.db
+
+# Local implementation records
+/docs/local_records/

@@ -26,6 +26,9 @@
 
 set -euo pipefail
 
+NOTES_ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # joygen-deployment-notes/
+JOYGEN_ROOT="$(cd "$NOTES_ROOT/../JoyGen" && pwd)" # 同層的 JoyGen/
+
 usage() {
     cat <<EOF
 usage: bash scripts/run.sh <mode> <args...>
@@ -57,6 +60,9 @@ case "$MODE" in
         RESULT="${4:-results/stream_baseline}"
         TAG="$(basename "${AUDIO%.*}")_$(date +%m%d_%H%M)"
 
+        cd "$JOYGEN_ROOT"
+        export PYTHONPATH="$NOTES_ROOT:$JOYGEN_ROOT:${PYTHONPATH:-}"
+
         python -u -m streaming.baseline_timing \
             --audio_path "$AUDIO" --video_path "$VIDEO" --intermediate_dir "$INTER" \
             "${COMMON_MODEL_ARGS[@]}" \
@@ -76,6 +82,9 @@ case "$MODE" in
         TAG="$(basename "${AUDIO%.*}")_$(date +%m%d_%H%M)"
         echo "[run] target = $TARGET"
 
+        cd "$JOYGEN_ROOT"
+        export PYTHONPATH="$NOTES_ROOT:$JOYGEN_ROOT:${PYTHONPATH:-}"
+
         python -u -m streaming.joygen_stream \
             --audio_path "$AUDIO" --video_path "$VIDEO" --intermediate_dir "$INTER" \
             "${COMMON_MODEL_ARGS[@]}" \
@@ -88,8 +97,12 @@ case "$MODE" in
         SRC="${1:-stream.sdp}"
         if [[ "$SRC" == udp://* || "$SRC" == rtp://* ]]; then
             # MPEG-TS (over UDP, or over RTP when audio is muxed in): no SDP needed
+            # probesize 2MB ≈ 4s at 4Mbps — enough to catch at least one keyframe
+            # (with --gop 25 at ~11fps, keyframes come every ~2.3s).
+            # 500KB was too small (missed SPS/PPS), 5MB too large (10s startup).
             echo "[run] listening on $SRC (start this before the sender)"
-            ffplay -probesize 5000000 -analyzeduration 5000000 \
+            ffplay -probesize 2000000 -analyzeduration 2000000 \
+                   -flags low_delay \
                    -reorder_queue_size 2000 \
                    -buffer_size 20000000 \
                    -max_delay 500000 \

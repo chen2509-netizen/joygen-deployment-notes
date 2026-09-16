@@ -28,7 +28,7 @@ Automates the whole of [`SETUP.md`](./SETUP.md): conda env, CUDA toolkit, PyTorc
 
 `--dry-run` prints the detected GPU and the install plan without changing anything. Other flags: `--profile cu117|cu118`, `--env-name`, `--projects-dir`, `--skip-weights`, `--skip-smoke-test`.
 
-> **Status:** the install flow is the one verified on RTX 3060 / Ubuntu 20.04 and recorded in [`SETUP.md`](./SETUP.md), but `setup.sh` itself has not yet been run end-to-end. CUDA 11.8 for sm_89 (RTX 4090) and the `gcc-9` fallback on Ubuntu 22.04 are inferred, not tested. If it fails, [`SETUP.md`](./SETUP.md) has the manual steps.
+> **Status:** tested end-to-end on RTX 3060 / Ubuntu 20.04 (WSL2) and RTX 4090 / Ubuntu 22.04 (WSL2). Use `--profile cu118` on the 4090. The `gcc-9` fallback on Ubuntu 22.04 is not needed — gcc 11 (the distro default) works. If setup fails, [`SETUP.md`](./SETUP.md) has the manual steps.
 
 ### 4. Run inference
 
@@ -64,13 +64,15 @@ Automates the whole of [`SETUP.md`](./SETUP.md): conda env, CUDA toolkit, PyTorc
 
 ## Environment
 
-| | |
-|---|---|
-| OS | Ubuntu 20.04.6 LTS (tested via WSL2) |
-| GPU | RTX 3060 (12GB) |
-| Python | 3.8.19 |
-| CUDA toolkit | 11.7 (installed via conda, not system-wide) |
-| PyTorch | 2.0.1+cu117 |
+| | RTX 3060 (dev) | RTX 4090 (deployment) |
+|---|---|---|
+| OS | Ubuntu 20.04.6 LTS (WSL2) | Ubuntu 22.04 LTS (WSL2) |
+| GPU | RTX 3060 (12GB) | RTX 4090 |
+| Python | 3.8.19 | 3.8.19 |
+| CUDA toolkit | 11.7 (conda) | 11.8 (conda, `--profile cu118`) |
+| PyTorch | 2.0.1+cu117 | 2.0.1+cu118 |
+
+`streaming/` and `scripts/run.sh` live in this repo and are **not** copied into the JoyGen checkout. `run.sh` sets `PYTHONPATH` and `cd`s into JoyGen automatically. Both repos should be cloned as siblings under the same parent directory (e.g. `~/imood_project/`).
 
 ## Going further
 

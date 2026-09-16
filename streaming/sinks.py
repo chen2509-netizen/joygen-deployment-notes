@@ -19,15 +19,35 @@ class FFmpegSink:
     modifies the audio — it only reads it to condition the model — so the
     original file can go straight through to the output.
 
+    audio_sync controls *how* that audio reaches ffmpeg (Step 6):
+        "fifo"  (方向 B, 預設) — the source audio is decoded once into 16kHz
+                mono PCM up front, then written out one frame's worth at a
+                time, right after each video frame, over a named pipe. Audio
+                is paced by generation the same way video already is (video
+                has always been paced this way, since it arrives over a
+                stdin pipe that ffmpeg only reads as fast as we write it).
+                This is what keeps A/V from drifting when generation is
+                slower than realtime.
+        "file"  (方向 A) — ffmpeg reads/decodes the source file directly at
+                full speed. Only useful for validating that the mapping
+                itself is correct (does audio line up with the mouth) against
+                a file target; muxing live will drift once generation falls
+                behind, since ffmpeg's muxer eventually stops waiting on the
+                slow video input (`max_interleave_delta`) and just flushes
+                the audio ahead.
+
     Note that '-f rtp' carries a single stream, so an rtp:// target with audio
     is switched to rtp_mpegts, which puts both tracks on one port. That variant
     does not use an SDP file; the receiver reads the rtp:// URL directly.
     """
 
+    AUDIO_SAMPLE_RATE = 16000  # 16kHz mono s16le, per imood-ai-architecture.md
+
     def __init__(self, width, height, fps, target,
                  preset="ultrafast", tune="zerolatency",
                  bitrate=None, gop=None, pkt_size=1200,
-                 sdp_path="stream.sdp", audio_path=None, verbose=False):
+                 sdp_path="stream.sdp", audio_path=None, audio_sync="fifo",
+                 verbose=False):
         self.width = width
         self.height = height
         self.fps = fps
@@ -35,6 +55,29 @@ class FFmpegSink:
         self.sdp_path = None
         self.recv_hint = None
         self.frames_written = 0
+
+        # ---- audio-sync state (only used when audio_path is given) ----
+        self.audio_sync = audio_sync if audio_path else None
+        self._audio_fifo_path = None
+        self._audio_fifo_fd = None
+        self._audio_pcm = b""
+        self._audio_bytes_per_frame = 0
+        self._audio_bytes_written = 0
+
+        if audio_path and self.audio_sync == "fifo":
+            self._audio_pcm = _decode_pcm_s16le(audio_path, self.AUDIO_SAMPLE_RATE)
+            # 16-bit mono -> 2 bytes/sample
+            self._audio_bytes_per_frame = int(round(self.AUDIO_SAMPLE_RATE / fps)) * 2
+            self._audio_fifo_path = f"/tmp/jg_audio_{os.getpid()}.pcm"
+            if os.path.exists(self._audio_fifo_path):
+                os.remove(self._audio_fifo_path)
+            os.mkfifo(self._audio_fifo_path)
+            # O_RDWR on a FIFO never blocks (POSIX) — returns immediately
+            # without waiting for a reader. Writes buffer in the kernel pipe
+            # until ffmpeg opens its read side during startup. We open this
+            # *before* Popen so ffmpeg finds the write side ready and doesn't
+            # have to race against Python.
+            self._audio_fifo_fd = os.open(self._audio_fifo_path, os.O_RDWR)
 
         cmd = [
             "ffmpeg", "-y",
@@ -47,10 +90,22 @@ class FFmpegSink:
             "-i", "-",
         ]
 
-        if audio_path:
-            # input 1: the source audio, read as fast as it can be decoded.
-            # Frame PTS come from -r above, so alignment does not depend on how
-            # slowly frames arrive over stdin.
+        if audio_path and self.audio_sync == "fifo":
+            # input 1: raw PCM, paced one frame's worth at a time from Python
+            # (see write_audio_upto). ffmpeg just reads whatever is written to
+            # the pipe, so audio and video advance in lockstep by construction.
+            # -probesize 32: format is already declared (-f s16le -ar -ac), so
+            # there is nothing to detect; without this ffmpeg blocks waiting
+            # for probe data before it starts reading stdin (input 0), which
+            # deadlocks because Python doesn't write audio until after writing
+            # the first video frame.
+            cmd += ["-f", "s16le", "-ar", str(self.AUDIO_SAMPLE_RATE), "-ac", "1",
+                    "-probesize", "32", "-i", self._audio_fifo_path]
+        elif audio_path:
+            # input 1 (方向 A): the source audio, read/decoded as fast as
+            # ffmpeg likes. Frame PTS come from -r above, so alignment is
+            # correct on paper, but the muxer will flush audio ahead if video
+            # falls far enough behind (see class docstring).
             cmd += ["-i", audio_path]
 
         cmd += [
@@ -119,10 +174,35 @@ class FFmpegSink:
                      "receiver is still running, and re-run with --verbose to "
                      "see ffmpeg's own output.")
 
+    def write_audio_upto(self, frame_idx):
+        """方向 B：把 frame_idx（0-based）對應的那段 PCM 補到 fifo 裡。
+
+        跟畫面用同一個時間軸換算（frame_idx/fps <-> sample_count/sample_rate），
+        呼叫時機是「這張畫面剛寫進 video pipe 之後」，所以音訊永遠不會跑到比
+        目前這張畫面更晚的時間點。no-op when audio_sync 不是 "fifo"。
+        """
+        if self.audio_sync != "fifo":
+            return
+        end_byte = min((frame_idx + 1) * self._audio_bytes_per_frame,
+                       len(self._audio_pcm))
+        chunk = self._audio_pcm[self._audio_bytes_written:end_byte]
+        if chunk:
+            os.write(self._audio_fifo_fd, chunk)
+            self._audio_bytes_written = end_byte
+
     def close(self):
         if self.proc.stdin:
             self.proc.stdin.close()
+        if self._audio_fifo_fd is not None:
+            # Flush whatever's left (e.g. rounding, or audio slightly longer
+            # than frame_count * bytes_per_frame covers) before closing.
+            tail = self._audio_pcm[self._audio_bytes_written:]
+            if tail:
+                os.write(self._audio_fifo_fd, tail)
+            os.close(self._audio_fifo_fd)
         code = self.proc.wait()
+        if self._audio_fifo_path and os.path.exists(self._audio_fifo_path):
+            os.remove(self._audio_fifo_path)
         print(f"[sink] ffmpeg exited({code}), frames written: {self.frames_written}",
               flush=True)
 
@@ -142,6 +222,14 @@ class PngSink:
 
     def close(self):
         pass
+
+
+def _decode_pcm_s16le(audio_path, sample_rate):
+    """一次性把來源音訊解成 16-bit mono PCM，存記憶體供逐 frame 切片用。"""
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", audio_path,
+           "-f", "s16le", "-ar", str(sample_rate), "-ac", "1", "-"]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, check=True)
+    return result.stdout
 
 
 def _with_query(url, query):

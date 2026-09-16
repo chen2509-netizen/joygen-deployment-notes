@@ -4,6 +4,11 @@ joygen_stream.py — JoyGen 串流化實作
 Step 2：把貼圖併進生成迴圈，透過 callback 交出每張完成的 frame。
 Step 3：callback 改接常駐 ffmpeg（即時編碼送出），PNG 改成 --debug 才寫；
         並加上 warmup，避免第一次 forward 的 CUDA 初始化污染計時。
+Step 6：音訊不再直接丟檔案給 ffmpeg 讀（方向 A），改成畫面驅動音訊
+        （方向 B，預設）——開場解一次 PCM，每寫一張畫面就把對應的
+        那 40ms 音訊一起送進 FFmpegSink 的音訊 fifo。--audio-sync file
+        保留方向 A 供快速驗證用。實際差異都在 FFmpegSink 內（sinks.py），
+        這裡只是多呼叫一行 write_audio_upto。
 
 跟 baseline_timing.py 的差別：
   - baseline 有兩個 pass（生成全跑完 → 才逐張貼圖 → 全部寫 PNG → 一次性 ffmpeg）
@@ -147,7 +152,11 @@ def main(args):
                              bitrate=args.bitrate, gop=args.gop,
                              pkt_size=args.pkt_size, sdp_path=args.sdp_file,
                              audio_path=None if args.no_audio else args.audio_path,
+                             audio_sync=args.audio_sync,
                              verbose=args.verbose)
+    if not args.no_audio:
+        print(f"[info] audio-sync = {args.audio_sync} "
+              f"({'畫面驅動音訊, 方向 B' if args.audio_sync == 'fifo' else '音訊直接讀檔, 方向 A'})")
 
     # debug 路徑：預設關閉。開啟才寫 PNG（供 diff_frames 驗證正確性用），
     # 但寫檔是阻塞 I/O，會拖慢主迴圈、污染計時，所以正式量測時不要開。
@@ -193,6 +202,9 @@ def main(args):
 
                 # 送出：這就是「畫面產生後幾毫秒內就進編碼器」的那一步
                 ffmpeg_sink.write(combine_img)
+                # 方向 B：這張畫面對應的那段音訊，跟著這張畫面一起送出
+                # （no-op when --audio-sync file 或 --no_audio）
+                ffmpeg_sink.write_audio_upto(frame_idx)
                 if png_sink is not None:
                     png_sink.write(combine_img, frame_idx + 1)
 
@@ -224,6 +236,7 @@ def main(args):
         "gop": args.gop,
         "pkt_size": args.pkt_size,
         "audio_muxed": not args.no_audio,
+        "audio_sync": args.audio_sync if not args.no_audio else None,
         "debug_png": bool(args.debug),
         "first_frame_after_gen_start_ms": round(first_frame_ms or 0, 1),
         "gpu_id": args.gpu_id,
@@ -263,6 +276,11 @@ def build_parser():
                    help="where to write the SDP the RTP receiver needs")
     p.add_argument("--no_audio", action="store_true",
                    help="video only; by default the source audio is muxed in")
+    p.add_argument("--audio-sync", choices=["fifo", "file"], default="fifo",
+                   help="fifo (方向 B, 預設): audio paced frame-by-frame, locked "
+                        "to generation speed, no drift. "
+                        "file (方向 A): ffmpeg reads the audio file directly at "
+                        "full speed; only for quick file-output validation.")
     p.add_argument("--debug", action="store_true",
                    help="同時寫 PNG 供 diff 驗證（會拖慢，正式計時勿開）")
     p.add_argument("--verbose", action="store_true")
