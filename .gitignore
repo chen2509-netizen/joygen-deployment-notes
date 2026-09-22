@@ -14,3 +14,9 @@ Thumbs.db
 
 # Local implementation records
 /docs/local_records/
+# Local trial environment & run artifacts (large, not for version control)
+/_linux_trial/
+/results/
+/cache/
+/logs/
+/timing/

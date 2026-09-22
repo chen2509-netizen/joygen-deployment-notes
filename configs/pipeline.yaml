@@ -1,0 +1,179 @@
+# pipeline.yaml — imood voice x JoyGen 串接的集中調參檔
+#
+# 這個檔案是唯一的調參入口。JoyGen 端由 streaming_input/config.py 讀取，
+# imood-voice 端由 server.py 讀取（M3 才接上）。
+#
+# 路徑規則：這個檔案裡的相對路徑一律相對於 joygen-deployment-notes 根目錄，
+# 不是相對於 cwd —— input streaming 執行時 cwd 會被切到 JoyGen 根目錄
+# （utils/blending.py 在 import 時就用相對路徑載權重，繞不掉），如果照 cwd 解
+# 就會掉進 JoyGen/ 裡。載入時由 config.resolve_dir / resolve_file 展開。
+#
+# 所以請**不要**在這裡寫絕對路徑：寫死 /home/cgmhaha/... 的話，換一台機器
+# （下週的 A100）每一行都要手改。例外是 video_path / intermediate_dir /
+# a2m_ckpt / hubert_path —— 那些是 JoyGen 自己的資源，相對於 JoyGen 根目錄。
+
+# ---------------------------------------------------------------- VAD 斷句
+# 對應 imood-voice 的 voice_asr.EndpointConfig。這裡的值會覆蓋它的預設值。
+vad:
+  frame_ms: 20                # webrtcvad 子 frame，只能是 10 / 20 / 30
+  vad_aggressiveness: 2       # 0-3，越大越容易判定為靜音
+  end_silence_ms: 900         # 連續靜音多久算「講完一句」← 最常調的就是這個
+  min_utterance_ms: 400       # 有聲音訊不足這麼長就丟棄（濾咳嗽 / 誤觸）
+  max_utterance_ms: 15000     # 硬上限，避免 VAD 卡噪音時 buffer 無限長
+  pre_pad_ms: 300             # 保留語音起點前這麼多音訊，不切掉字頭
+  calibration_ms: 500         # 連線後拿前這麼多音訊估環境底噪
+  energy_gate_factor: 3.0     # chunk RMS < floor * factor 無條件當靜音
+  min_noise_floor: 60.0       # 底噪 RMS 下限
+  coalesce_ms: 1000           # 續句合併：辨識完先等這麼久看有沒有續句，有就併成
+                              # 一句再丟 LLM，避免「一個念頭 → 回兩次」。0 = 關閉。
+                              # 這是 server.py 原本寫死的值，改小會變得比較搶話。
+
+# ---------------------------------------------------------------- ASR
+asr:
+  model: small
+  device: auto                # auto | cuda | cpu
+  compute_type: float16
+
+# ---------------------------------------------------------------- TTS
+tts:
+  endpoint: http://127.0.0.1:8001/synthesize
+  voice: female               # female | male
+  chunk_ms: 320               # 對齊 JoyGen 的 8-frame batch @25fps，不要亂改
+  sample_rate: 16000
+  prompt_wav_female: ""       # CosyVoice2 zero-shot 參考音檔（留空用 tts_service 的預設）
+  prompt_text_female: ""
+  prompt_wav_male: ""         # ← 待補：~5-10 秒乾淨男聲
+  prompt_text_male: ""        # ← 待補：上面那段音檔的逐字稿
+
+# ---------------------------------------------------------------- JoyGen 輸入端
+joygen_input:
+  fps: 25
+  batch_frames: 8             # UNet 一次生幾張；8 frames = 320ms = 一個 TTS chunk
+  img_size: 256
+  gpu_id: 0
+
+  # 音訊來源
+  source: file                # file | ws-push
+  enabled: true               # imood-voice 要不要把 TTS 的 PCM 推給 JoyGen
+                              # （false = 只有語音沒有畫面，語音流程不受影響）
+  ingest_host: 0.0.0.0        # 服務端的監聽位址；imood-voice 連線時會自動把
+                              # 0.0.0.0 換成 127.0.0.1（0.0.0.0 不能拿來連）
+  ingest_port: 8100
+  ingest_status_timeout_s: 300  # imood-voice 送出 END 之後等 JoyGen 回報結果的
+                                # 上限。這要蓋過「一句話的生成時間」，不是網路
+                                # 往返 —— pose-driven 在慢的 GPU 上會很久。
+  file_pace: fast             # source=file 時：fast | realtime
+                              #   fast     = 有多快餵多快（buffer 滿會等，不會丟）
+                              #   realtime = 每塊之間睡 chunk_ms，模擬準時的 TTS
+  file_jitter_ms: 0.0         # realtime 時每塊到達時間的隨機抖動
+
+  # 緩衝
+  ring_buffer_s: 10           # ring buffer 容量
+  prebuffer_ms: 640           # 開始生成前先屯這麼多音訊（2 個 chunk）
+  silence_policy: hold_last_frame   # hold_last_frame | zero_fill：音訊斷流時怎麼辦
+
+  # 串流 whisper 特徵 —— 以下預設值由 M1 實測決定，見
+  # docs/local_records/M1 whisper 串流特徵對拍 - 260918.md
+  #
+  # whisper encoder 用絕對位置編碼，同一段音訊在視窗裡的位置不同，輸出就不同。
+  # anchored 把視窗起點釘在離線 audio2feat 用的同一條 30 秒格線上，讓每個 row
+  # 的位置索引與離線一致 —— 這是對拍能不能過的關鍵，比視窗長度重要得多。
+  whisper_window_mode: anchored     # anchored | sliding（sliding 僅供對照，不要用）
+  whisper_right_context_ms: 400     # 延後送出，讓 row 右邊接的是真音訊而非零填充
+                                    #   0 -> cos 0.911 / 320 -> 0.971
+                                    #   400 -> 0.974 / 800 -> 0.982（延遲換精度）
+  whisper_mel_norm: window          # window | running，實測兩者幾乎無差，取簡單的
+  whisper_left_context_ms: 2000     # 只在 window_mode=sliding 時作用，anchored 會忽略
+  whisper_lookahead_ms: 120         # frame i 需要的前瞻量，由 get_sliced_feature 決定
+                                    # （與 right_context 相加才是總前瞻）
+  whisper_fp16: true                # 與離線 audio2feat 的 transcribe(fp16=True) 一致
+
+  # 串流 audio2motion（pose-driven 才會用到）—— M4 實測見
+  # docs/local_records/M4 audio2motion 串流化 - 260918.md
+  #
+  # 這條路徑跟 whisper 那條不同：HuBERT 與 audio2secc VAE 都是卷積、沒有絕對
+  # 位置編碼，所以滑動視窗就夠，不需要錨定。實測 window / left / norm 三個
+  # 參數對誤差幾乎沒有影響（mean 都落在 0.047-0.055，seed 間的差距是 0.061），
+  # 殘差主要來自 VAE 自身的採樣，不是視窗化造成的。
+  a2m_ckpt: ./pretrained_models/audio2motion/240210_real3dportrait_orig/audio2secc_vae
+  hubert_path: pretrained_models/audio2motion/hubert
+  motion_window_ms: 2000     # 交給模型的音訊總長（往回取，不等待）。
+                             # 每個 hop 都要對整個視窗重跑 HuBERT，所以視窗長度
+                             # 直接決定成本：8000ms 要 291ms/次（佔 320ms 預算的
+                             # 91%），2000ms 只要 88ms，而 mean 誤差只差 0.0036。
+  motion_hop_ms: 320         # 多久跑一次；左側 context = window - hop
+                             # 延遲只由 hop + right_context 決定
+  motion_right_context_ms: 400
+  motion_fade_ms: 400         # 重疊區交叉淡化。加長幫助有限（200→1600ms 只讓
+                              # max 從 0.803 降到 0.756），因為差異來自採樣不是接縫
+  motion_audio_norm: window   # window | running（Wav2Vec2 的逐視窗正規化）
+  motion_temperature: 0.2     # FVAE 取樣溫度；0 = 不採樣、完全決定性
+  motion_mouth_amp: 0.45
+  motion_seed: 0
+
+  # avatar
+  enable_pose_driven: false   # false = Path A，不需要音訊相關的 depth
+  loop_mode: pingpong         # pingpong | restart：音訊比影片長時怎麼循環
+
+  # 多張臉：模型只載一份，每張臉各自一份 avatar 快取（約 300MB 記憶體）。
+  # 前端讓使用者選臉，BEGIN 帶 avatar 欄位過來（沒帶就用 voice，再沒有就用
+  # default_avatar）。新增一張臉要先跑 JoyGen 的預處理產生 intermediate，
+  # 再用 run_input.sh cache3d 建 3DMM 快取（pose-driven 才需要）。
+  default_avatar: female
+  avatars:
+    - id: female
+      video_path: demo/example_5s.mp4
+      intermediate_dir: results/smoke_test/edit_exp
+      audio_key: xinwen_5s        # intermediate 目錄是用「影片×音訊」命名的，
+                                  # pose-driven 由快取渲染時這只是個路徑鍵
+      avatar3d_cache: cache/avatar3d/example_5s.npz   # 相對 notes 根目錄
+      still_frame: 112            # 影片與前端的靜態照片都從這一幀開始，切換才接得上
+                                  # （frame 0 是張嘴閉眼，不適合當等待中的人像）
+    # 男生的臉待人選定後補上，格式同上：
+    # - id: male
+    #   video_path: demo/<male>.mp4
+    #   intermediate_dir: results/<...>
+    #   audio_key: <...>
+    #   avatar3d_cache: cache/avatar3d/<male>.npz
+
+# ---------------------------------------------------------------- JoyGen 輸出端
+joygen_output:
+  # persistent     = 一個常駐 ffmpeg 持續送 RTP（即時 avatar 用，M2-M4 量的就是這個）
+  # utterance_file = 每句話輸出一支 mp4，回傳檔案路徑
+  #                  瀏覽器播不了 RTP，所以網頁前端用這個：先顯示靜態照片，
+  #                  檔案好了再換成影片。這個模式不需要 idle frame。
+  mode: utterance_file
+  utterance_dir: results/utterances   # 相對 notes 根目錄
+  # imood-voice 從它那台機器看到的同一個目錄。留空即可：
+  #   - 同機部署（A100）    -> 就等於 utterance_dir
+  #   - 開發機（Windows 端）-> pipeline_config.py 會自動翻成 \\wsl.localhost\...
+  # 只有在自動推導不出來時（例如掛在別的 mount point）才需要手填絕對路徑。
+  utterance_dir_host: ""
+  keep_utterances: 20         # 只留最近幾支，避免無限長大
+
+  target: rtp://127.0.0.1:23000
+  preset: ultrafast
+  tune: zerolatency
+  bitrate: 4M
+  gop: 25                     # RTP 必須設，否則 libx264 預設 keyint=250
+  pkt_size: 1200
+  mux_audio: true
+
+# ---------------------------------------------------------------- 情緒（BERT）
+# imood-voice 的 server.py 在 LLM 回覆生成完之後，把回覆文字送去分類，結果填進
+# ingest BEGIN 的 emotion 欄位（0 中性 / 1 喜 / 2 怒 / 3 哀 / 4 樂，代碼定義在
+# imood-emotion 的 emotion/labels.py）。JoyGen 目前只把它記進 log。
+#
+# 分類跟 TTS 並行跑，送 BEGIN 的當下還沒算完就用 default，不會等它 ——
+# 服務沒開、連不上、出錯都只是「沒有情緒」，語音與畫面流程照走。
+emotion:
+  enabled: true
+  endpoint: http://127.0.0.1:8102/emotion   # imood-emotion 的 emotion/service.py
+  default: neutral            # 分類趕不上或失敗時填的值
+
+# ---------------------------------------------------------------- Log
+logging:
+  level: info
+  dir: ""                     # 絕對路徑，留空則用 <notes>/logs/
+  per_frame: true             # 逐 frame 打點（A100 實測時建議開）
+  stdout: true
