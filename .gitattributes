@@ -1,0 +1,17 @@
+# This project runs under Linux/WSL, so keep LF in the repo and on checkout.
+# Without this, core.autocrlf on Windows rewrites shell scripts to CRLF and
+# they fail with: /bin/bash^M: bad interpreter: No such file or directory
+* text=auto eol=lf
+
+# Executable scripts must stay LF no matter what.
+*.sh text eol=lf
+
+# Binary assets: never apply line-ending or diff conversion.
+*.mp4 binary
+*.wav binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pth binary
+*.pt binary
+*.npy binary
